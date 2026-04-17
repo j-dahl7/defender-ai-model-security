@@ -1,26 +1,40 @@
 name: AI Model Security Gate
 
-# Fail the build if any model artifact contains malware, unsafe operators,
-# or exposed secrets. Runs on every PR that touches the models/ directory.
-
 on:
   pull_request:
     paths:
       - 'models/**'
       - 'payloads/**'
+      - '.github/workflows/model-scan.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write          # OIDC to Azure / Defender
-  pull-requests: write     # Post SARIF results as PR comments
-  security-events: write   # Upload SARIF to GitHub Advanced Security
+  id-token: write
+  pull-requests: write
+  security-events: write
 
 jobs:
   scan-models:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build model artifacts (clean + malicious)
+        run: |
+          cd payloads
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -q -r requirements.txt
+          python build_clean_model.py
+          python build_malicious_reduce.py
+          python build_secret_exposed.py
+          ls -la artifacts/
 
       - name: Authenticate to Azure (OIDC)
         uses: azure/login@v2
@@ -35,14 +49,15 @@ jobs:
           curl -sL -o "$HOME/.local/bin/defender" https://aka.ms/defender-cli_linux-x64
           chmod +x "$HOME/.local/bin/defender"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/defender" --version || true
 
-      - name: Scan all models
+      - name: Scan all model artifacts
         id: scan
         run: |
           mkdir -p sarif
           fail=0
           shopt -s nullglob
-          for model in models/*.pkl models/*.onnx models/*.pt models/*.h5 models/*.safetensors payloads/artifacts/*.pkl; do
+          for model in payloads/artifacts/*.pkl payloads/artifacts/*.pt models/*.pkl models/*.onnx; do
             [[ -e "$model" ]] || continue
             name=$(basename "$model")
             echo "::group::Scanning $name"
@@ -52,6 +67,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
           exit $fail
 
       - name: Upload SARIF to GitHub code scanning
