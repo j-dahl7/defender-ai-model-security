@@ -1,0 +1,129 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# AI Model Security Dashboard\n\nReal-time view of malicious, risky, and unscanned AI models across Azure Machine Learning workspaces.\n\n**Scope:** Defender for AI Services `AIModelScanner` extension + AML activity logs.\n\n---"
+      },
+      "name": "header"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeRange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {"durationMs": 3600000},
+                {"durationMs": 86400000},
+                {"durationMs": 604800000},
+                {"durationMs": 2592000000}
+              ]
+            }
+          }
+        ],
+        "style": "pills"
+      },
+      "name": "params"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Flagged models at a glance"
+      },
+      "name": "kpi-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SecurityAlert\n| where TimeGenerated {TimeRange}\n| where ProductName =~ \"Microsoft Defender for Cloud\"\n| where AlertName startswith \"Ai.AIModelScan\"\n| summarize Total = count(), High = countif(AlertSeverity == \"High\"), Medium = countif(AlertSeverity == \"Medium\"), UniqueIdentities = dcount(CompromisedEntity)",
+        "size": 4,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": {"columnMatch": "Total", "formatter": 12, "formatOptions": {"palette": "auto"}},
+          "leftContent": {"columnMatch": "Total", "formatter": 12, "formatOptions": {"palette": "auto"}},
+          "showBorder": true
+        }
+      },
+      "name": "kpi-tiles"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Alert timeline"
+      },
+      "name": "timeline-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SecurityAlert\n| where TimeGenerated {TimeRange}\n| where ProductName =~ \"Microsoft Defender for Cloud\"\n| where AlertName startswith \"Ai.AIModelScan\"\n| summarize Count = count() by bin(TimeGenerated, 1h), AlertSeverity\n| render timechart",
+        "size": 0,
+        "timeContext": {"durationMs": 604800000},
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "timeline"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Top risky identities\n\nAccounts or service principals that registered flagged models. Treat 2+ hits in 7 days as a high-severity incident."
+      },
+      "name": "identities-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SecurityAlert\n| where TimeGenerated {TimeRange}\n| where ProductName =~ \"Microsoft Defender for Cloud\"\n| where AlertName startswith \"Ai.AIModelScan\"\n| extend actor = coalesce(CompromisedEntity, tostring(parse_json(Entities)[0].Name))\n| summarize Alerts = count(), DistinctAlertTypes = dcount(AlertName), Samples = make_set(AlertName, 5) by actor\n| sort by Alerts desc\n| take 20",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {"columnMatch": "Alerts", "formatter": 3, "formatOptions": {"palette": "redBright"}}
+          ]
+        }
+      },
+      "name": "identities-table"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## AML model registrations (last 24h)\n\nCross-reference against flagged alerts above. New registrations without a matching scan verdict are candidates for manual review."
+      },
+      "name": "registrations-header"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AzureActivity\n| where TimeGenerated > ago(24h)\n| where ResourceProvider =~ \"Microsoft.MachineLearningServices\"\n| where OperationNameValue has \"MODELS/WRITE\"\n| where ActivityStatusValue =~ \"Success\"\n| project TimeGenerated, Caller, ResourceId, OperationNameValue\n| sort by TimeGenerated desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table"
+      },
+      "name": "registrations-table"
+    }
+  ],
+  "styleSettings": {"paddingStyle": "narrow"},
+  "fromTemplateId": "nine-lives/ai-model-security/v1",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

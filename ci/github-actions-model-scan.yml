@@ -1,0 +1,66 @@
+name: AI Model Security Gate
+
+# Fail the build if any model artifact contains malware, unsafe operators,
+# or exposed secrets. Runs on every PR that touches the models/ directory.
+
+on:
+  pull_request:
+    paths:
+      - 'models/**'
+      - 'payloads/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write          # OIDC to Azure / Defender
+  pull-requests: write     # Post SARIF results as PR comments
+  security-events: write   # Upload SARIF to GitHub Advanced Security
+
+jobs:
+  scan-models:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Defender for Cloud CLI
+        run: |
+          curl -sL https://aka.ms/defender-cli/install.sh | bash
+          echo "$HOME/.defender/bin" >> $GITHUB_PATH
+
+      - name: Scan all models
+        id: scan
+        run: |
+          mkdir -p sarif
+          fail=0
+          shopt -s nullglob
+          for model in models/*.pkl models/*.onnx models/*.pt models/*.h5 models/*.safetensors payloads/artifacts/*.pkl; do
+            [[ -e "$model" ]] || continue
+            name=$(basename "$model")
+            echo "::group::Scanning $name"
+            if ! defender scan model "$model" --modelscanner-Output "sarif/${name}.sarif"; then
+              echo "::error file=$model::Malicious or risky artifact detected"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: Upload SARIF to GitHub code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: sarif/
+
+      - name: Block merge on detection
+        if: failure()
+        run: |
+          echo "One or more models failed the Defender model scan."
+          echo "Review SARIF output under the Security tab before merging."
+          exit 1
