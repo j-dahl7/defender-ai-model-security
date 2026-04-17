@@ -31,8 +31,10 @@ jobs:
 
       - name: Install Defender for Cloud CLI
         run: |
-          curl -sL https://aka.ms/defender-cli/install.sh | bash
-          echo "$HOME/.defender/bin" >> $GITHUB_PATH
+          mkdir -p "$HOME/.local/bin"
+          curl -sL -o "$HOME/.local/bin/defender" https://aka.ms/defender-cli_linux-x64
+          chmod +x "$HOME/.local/bin/defender"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Scan all models
         id: scan
