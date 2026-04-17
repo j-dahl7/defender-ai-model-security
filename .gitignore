@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Built artifacts
+payloads/artifacts/
+*.pkl
+*.pt
+*.h5
+*.onnx
+*.safetensors
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Defender CLI internals
+.gdn/
+
+# Azure
+.azure/
