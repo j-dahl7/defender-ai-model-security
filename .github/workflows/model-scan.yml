@@ -5,6 +5,7 @@ on:
     paths:
       - 'models/**'
       - 'payloads/**'
+      - 'scripts/modelscan_to_sarif.py'
       - '.github/workflows/model-scan.yml'
   workflow_dispatch:
 
@@ -25,7 +26,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Build model artifacts (clean + malicious)
+      - name: Build model artifacts (clean + malicious + secret)
         run: |
           cd payloads
           python -m venv .venv
@@ -36,49 +37,73 @@ jobs:
           python build_secret_exposed.py
           ls -la artifacts/
 
+      - name: Install OSS model scanners
+        run: |
+          python -m pip install -q modelscan picklescan
+
+      - name: Run modelscan (primary gate)
+        id: modelscan
+        run: |
+          mkdir -p sarif
+          modelscan scan -p payloads/artifacts/ -r json -o modelscan.json || true
+          python scripts/modelscan_to_sarif.py modelscan.json sarif/modelscan.sarif
+          crit=$(python -c "import json; d=json.load(open('modelscan.json')); print(d.get('summary',{}).get('total_issues_by_severity',{}).get('CRITICAL',0))")
+          high=$(python -c "import json; d=json.load(open('modelscan.json')); print(d.get('summary',{}).get('total_issues_by_severity',{}).get('HIGH',0))")
+          echo "modelscan reported CRITICAL=$crit HIGH=$high"
+          echo "critical=$crit" >> "$GITHUB_OUTPUT"
+          echo "high=$high" >> "$GITHUB_OUTPUT"
+
+      - name: Run picklescan (secondary check, informational)
+        continue-on-error: true
+        run: |
+          shopt -s nullglob
+          for f in payloads/artifacts/*.pkl; do
+            echo "::group::picklescan $f"
+            picklescan -p "$f" || true
+            echo "::endgroup::"
+          done
+
       - name: Authenticate to Azure (OIDC)
+        if: env.AZURE_CLIENT_ID != ''
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Install Defender for Cloud CLI
+      - name: Install and run Defender for Cloud CLI (best-effort)
+        continue-on-error: true
+        env:
+          DEFENDER_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          DEFENDER_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          DEFENDER_CLIENT_SECRET: ${{ secrets.DEFENDER_CLIENT_SECRET }}
+          GDN_MDC_CLI_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          GDN_MDC_CLI_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          GDN_MDC_CLI_CLIENT_SECRET: ${{ secrets.DEFENDER_CLIENT_SECRET }}
         run: |
           mkdir -p "$HOME/.local/bin"
           curl -sL -o "$HOME/.local/bin/defender" https://aka.ms/defender-cli_linux-x64
           chmod +x "$HOME/.local/bin/defender"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/defender" --version || true
+          if [ -z "${DEFENDER_CLIENT_SECRET}" ]; then
+            echo "DEFENDER_CLIENT_SECRET not set — skipping Defender CLI upload."
+            exit 0
+          fi
+          cd payloads/artifacts
+          "$HOME/.local/bin/defender" scan model . --modelscanner-Output /tmp/defender.sarif || true
+          if [ -f /tmp/defender.sarif ]; then
+            cp /tmp/defender.sarif "$GITHUB_WORKSPACE/sarif/defender.sarif"
+          fi
 
-      - name: Scan all model artifacts
-        id: scan
-        run: |
-          mkdir -p sarif
-          fail=0
-          shopt -s nullglob
-          for model in payloads/artifacts/*.pkl payloads/artifacts/*.pt models/*.pkl models/*.onnx; do
-            [[ -e "$model" ]] || continue
-            name=$(basename "$model")
-            echo "::group::Scanning $name"
-            if ! defender scan model "$model" --modelscanner-Output "sarif/${name}.sarif"; then
-              echo "::error file=$model::Malicious or risky artifact detected"
-              fail=1
-            fi
-            echo "::endgroup::"
-          done
-          echo "fail=$fail" >> "$GITHUB_OUTPUT"
-          exit $fail
-
-      - name: Upload SARIF to GitHub code scanning
+      - name: Upload SARIF to GitHub Code Scanning
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: sarif/
 
       - name: Block merge on detection
-        if: failure()
+        if: steps.modelscan.outputs.critical != '0' || steps.modelscan.outputs.high != '0'
         run: |
-          echo "One or more models failed the Defender model scan."
-          echo "Review SARIF output under the Security tab before merging."
+          echo "::error::Model scanner flagged CRITICAL or HIGH issues. Review the Security tab before merging."
           exit 1

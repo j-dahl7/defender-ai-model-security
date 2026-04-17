@@ -18,7 +18,7 @@ def main(out_dir: Path) -> None:
     model = RandomForestClassifier(n_estimators=10, random_state=42)
     model.fit(X, y)
     out_path = out_dir / "clean_iris_rf.pkl"
-    joblib.dump(model, out_path)
+    joblib.dump(model, out_path, protocol=4)
     print(f"Wrote {out_path} ({out_path.stat().st_size} bytes)")
 
 
